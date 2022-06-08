@@ -1,7 +1,16 @@
 #!/bin/bash
 # Tested on Ubuntu 20.04.4
 
-cd ../data
+if [ -d ./data ];
+then
+	cd ./data
+elif [ -d ../data ];
+then
+	cd ../data
+else
+	echo 'Unsure where data directory is...'
+	exit 0
+fi
 
 #########################
 # Retrieve zip archives #

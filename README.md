@@ -18,7 +18,7 @@ Installing pygraphviz first requires installing graphviz before installing pygra
 We will have an AWS environment setup with the datasets pre-loaded into S3 buckets and Neptune setup and ready to go. You will just have to clone the repo and install the packages in the requirements file.
 
 ## Local
-If you want to experiment with this locally, you will want to run the get_data.sh script in the setup folder first. Currently (06/06/2021) it only installs a graph containing 10K accounts and 1M transactions.
+If you want to experiment with this locally, you will want to run the ```setup.sh``` script in the project root or the ```get_data.sh script``` in the ```setup``` folder first. Currently (06/06/2021) it only installs a graph containing 10K accounts and 1M transactions.
 
 
 # Overview
