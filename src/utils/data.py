@@ -1,25 +1,30 @@
 """
 Class to simplify data loading, storage, and use
 
-TODO:
+TODO (no particular order):
     Add S3 data loading function
+*    Add validation of transaction dicts
+*    |-> TransactionLedger might be best as a class of its own...
+     |-> class for easy validation of data at each timestep?
     Add handling of temporal data (interval algebra)
-    Convert to using heterograph
+    |-> I think using a RL-env inspired setup might be the way to go...
+     |-> WIP in src/tmgraph.py
+    Enable using heterograph
     Add edge type OWNS_ACCOUNT & OWNS_ACCOUNT^-1 using customer_account dict
     More to come...
 """
 
 import os
 from time import time
-from dataclasses import dataclass
 
 from boto3 import resource
 
 from pandas import read_csv
 
 import torch
+from torch import tensor
 
-from dgl import graph
+from dgl import graph, DGLGraph
 
 
 ###########
@@ -46,12 +51,16 @@ def get_aml_data_s3(bucket, data_path):
     raise NotImplementedError("Work in progress!")
 
 
-def get_aml_graph_local(data_path):
+def get_aml_graph_local(data_path: str,
+                        load_all_trxns_into_graph: bool = False,
+                        ):
     """
     Loads the AMLSim graph into an AMLData object
         and a DGL graph
     ARGS:
-        data_path(str): path to the AMLSim data
+        data_path(str):= path to the AMLSim data
+        load_all_trxns_into_graph(bool):= load all transactions into the graph
+            if True, else prodcue a transaction ledger for downstream use
     RETURNS:
         (AMLData object, DGL Graph)
     """
@@ -61,20 +70,63 @@ def get_aml_graph_local(data_path):
     aml_data.load_data()
     print("Preparing graph object...")
     nodes_u, nodes_v, node_feats, edge_feats = aml_data.prep_data_for_graph()
-    G = graph((nodes_u, nodes_v))
-    G.ndata['INIT_BALANCE'] = node_feats['INIT_BALANCE']
-    G.ndata['COUNTRY'] = node_feats['COUNTRY']
-    G.ndata['ACCOUNT_TYPE'] = node_feats['ACCOUNT_TYPE']
-    G.edata['TX_AMOUNT'] = edge_feats['TX_AMOUNT']
-    G.edata['TIMESTAMP'] = edge_feats['TIMESTAMP']
-    G.edata['TX_TYPE'] = edge_feats['TX_TYPE']
-    print("Graph created!")
+    if load_all_trxns_into_graph:
+        G = graph((nodes_u, nodes_v))
+        G.ndata['BALANCE'] = node_feats['BALANCE']
+        G.ndata['COUNTRY'] = node_feats['COUNTRY']
+        G.ndata['ACCOUNT_TYPE'] = node_feats['ACCOUNT_TYPE']
+        print("Graph created...")
+        print("Loading all transactions into graph...")
+        G.edata['TX_AMOUNT'] = edge_feats['TX_AMOUNT']
+        G.edata['TIMESTAMP'] = edge_feats['TIMESTAMP']
+        G.edata['TX_TYPE'] = edge_feats['TX_TYPE']
+    else:
+        G = DGLGraph()
+        G.add_nodes(len(aml_data.accounts),
+                    {'BALANCE': node_feats['BALANCE'],
+                     'COUNTRY': node_feats['COUNTRY'],
+                     'ACCOUNT_TYPE': node_feats['ACCOUNT_TYPE']
+                    }
+                   )
+        print("Graph created...")
+        print("Building transaction ledger...")
+        ledger = aml_data.make_transaction_ledger()
     return aml_data, G
 
 
 ###########
 # CLASSES #
 ###########
+
+class TransactionLedger(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.valid_keys = set(['TX_ID',
+                               'SENDER_ACCOUNT_ID',
+                               'RECEIVER_ACCOUNT_ID',
+                               'TX_AMOUNT',
+                               'TIMESTAMP',
+                               'TX_TYPE'
+                              ]
+                             )
+
+    def _validate_addition(self, key, mapping):
+        assert isinstance(key, int), "ledger keys must be integers for now"
+        assert self.valid_keys == set(mapping.keys())
+        assert all([isinstance(v, torch.Tensor) for v in mapping.values()])
+
+    def update(self, mapping):
+        for k, v in mapping.items():
+            self._validate_addition(k, v)
+            self[k] = v
+
+    def to(self, device):
+        """
+        This could be enabled here or device stored and objects moved
+            when an object is retreived
+        """
+        raise NotImplementedError("Deciding on best approach")
+
 
 class AMLData:
     def __init__(self, data_dir):
@@ -112,7 +164,7 @@ class AMLData:
         self._make_data_dicts()
         nodes_u = torch.tensor(self.transactions['SENDER_ACCOUNT_ID'].values)
         nodes_v = torch.tensor(self.transactions['RECEIVER_ACCOUNT_ID'].values)
-        node_feats = {'INIT_BALANCE': torch.tensor(self.accounts.INIT_BALANCE),
+        node_feats = {'BALANCE': torch.tensor(self.accounts.INIT_BALANCE),
                       'COUNTRY': torch.tensor(self.accounts.COUNTRY \
                         .replace(self.data_dicts['country2id'])),
                       'ACCOUNT_TYPE': torch.tensor(self.accounts.ACCOUNT_TYPE \
@@ -162,3 +214,28 @@ class AMLData:
                                                     self.accounts.CUSTOMER_ID
                                                    )
                                 }
+
+    def make_transaction_ledger(self):
+        """
+        Partitions the transaction data into a dictionary or list where each
+            entry is all the data for a particular timestep
+        """
+        timestamps = set(self.transactions.TIMESTAMP.astype(int).values)
+        self.ledger = TransactionLedger()
+        for t in timestamps:
+            t = int(t)
+            tmp = self.transactions[self.transactions.TIMESTAMP==t]
+            tmp.iloc[:]['TX_TYPE'].replace(self.data_dicts['trxn_type2id'],
+                                   inplace=True
+                                  )
+            transactions_t = {'TX_ID':tmp.TX_ID.astype(int).values,
+                              'SENDER_ACCOUNT_ID': tmp.SENDER_ACCOUNT_ID. \
+                                    astype(int).values,
+                              'RECEIVER_ACCOUNT_ID':tmp.RECEIVER_ACCOUNT_ID. \
+                                    astype(int).values,
+                              'TX_TYPE':tmp.TX_TYPE.astype(int).values,
+                              'TX_AMOUNT':tmp.TX_AMOUNT.astype(float).values,
+                              'TIMESTAMP':tmp.TIMESTAMP.astype(int).values
+                             }
+            transactions_t = {k:tensor(v) for k,v in transactions_t.items()}
+            self.ledger.update({t: transactions_t})
