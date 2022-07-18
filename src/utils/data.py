@@ -81,6 +81,7 @@ def get_aml_graph_local(data_path: str,
         G.edata['TIMESTAMP'] = edge_feats['TIMESTAMP']
         G.edata['TX_TYPE'] = edge_feats['TX_TYPE']
     else:
+        # Raises a warning, find better solution
         G = DGLGraph()
         G.add_nodes(len(aml_data.accounts),
                     {'BALANCE': node_feats['BALANCE'],
